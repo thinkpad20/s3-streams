@@ -24,7 +24,7 @@ import qualified Data.Text as T
 import System.Environment
 import System.Time
 import System.Locale
-import Text.Str
+import Text.Str hiding (error)
 import Text.URI (URI(..), mergeURIs)
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString.Base16 as B16
