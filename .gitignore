@@ -1,2 +1,5 @@
 .cabal-sandbox
 simple.hs
+cabal.sandbox.config
+dist
+__MACOSX
