@@ -30,14 +30,17 @@ import qualified Data.ByteString as B
 import Data.ByteString (ByteString)
 import Codec.Utils (Octet)
 
-instance IsString [Octet] where
-  fromString = US.encode
-
--- | Extends the @IsString@ class with the ability to go the other way,
--- allowing the abstraction of a particular String type, such that functions
--- can be written to more easily accept any of the common string types,
--- such as String, ByteString (and its variants), Text, etc. It also makes
--- @newtype@-wrapped strings easier to work with.
+-- | @Str@ types are any type which can be thought as abstract strings; that 
+-- is, ordered lists of Char. There are at least 3 commonly-used string types
+-- in Haskell (String, ByteString and Text), as well as @newtype@d strings.
+-- The interop with these types can be tedious or even bug-prone. Using
+-- @Str@ allows functions to be written agnostically towards any particular 
+-- type. It provides a set of commonly-needed string manipulation functions,
+-- and the ability to convert to and from a variety of string types, which
+-- lets us "borrow" existing functions which only operate on one of the types
+-- (see the various @as-@ functions). @Str@ extends several useful classes, 
+-- perhaps most importantly @IsString@, which lets us use string literals to 
+-- represent @Str@s.
 class (IsString s, Show s, Ord s, Monoid s) => Str s where 
   toString :: s -> String
   toByteString :: s -> ByteString
@@ -46,16 +49,19 @@ class (IsString s, Show s, Ord s, Monoid s) => Str s where
   fromText :: Text -> s
   fromByteString :: ByteString -> s
   fromOctets :: [Octet] -> s
-  fromOctets = fromString . US.decode
   joinBy :: s -> [s] -> s
-  cmap :: (Char -> Char) -> s -> s
+  splitOn :: s -> s -> [s]
+  smap :: (Char -> Char) -> s -> s
   singleton :: Char -> s
   cons :: Char -> s -> s
   snoc :: s -> Char -> s
   reverse :: s -> s
   dropWhile :: (Char -> Bool) -> s -> s
+  isPrefixOf :: s -> s -> Bool
+  isSuffixOf :: s -> s -> Bool
   trim :: s -> s
-  trim = f . f where f = reverse . dropWhile isSpace
+  trim = let f = reverse . dropWhile isSpace in f . f
+
 
 instance Str String where 
   toString = id
@@ -64,13 +70,16 @@ instance Str String where
   toOctets = US.encode
   fromByteString = BC.unpack
   fromText = T.unpack
+  fromOctets = US.decode
   joinBy = L.intercalate
-  cmap = P.map
+  smap = P.map
   singleton c = [c]
   cons = (:)
   snoc s c = s <> [c]
   reverse = P.reverse
   dropWhile = P.dropWhile
+  isPrefixOf = L.isPrefixOf
+  isSuffixOf = L.isSuffixOf
 
 instance Str ByteString where 
   toString = BC.unpack
@@ -79,13 +88,16 @@ instance Str ByteString where
   toOctets = B.unpack
   fromByteString = id
   fromText = encodeUtf8
-  cmap = BC.map
+  fromOctets = B.pack
+  smap = BC.map
   joinBy = BC.intercalate
   singleton = BC.singleton
   cons = BC.cons
   snoc = BC.snoc
   reverse = BC.reverse
   dropWhile = BC.dropWhile
+  isPrefixOf = B.isPrefixOf
+  isSuffixOf = B.isSuffixOf
 
 instance Str Text where 
   toString = T.unpack
@@ -95,27 +107,16 @@ instance Str Text where
   fromByteString = decodeUtf8
   fromText = id
   fromOctets = fromString . US.decode
-  cmap = T.map
+  smap = T.map
   joinBy = T.intercalate
   singleton = T.singleton
   cons = T.cons
   snoc = T.snoc
   reverse = T.reverse
   dropWhile = T.dropWhile
-
---instance Str [Octet] where
---  toString = US.decode
---  toByteString = B.pack . toString
---  toText = T.pack . toString
---  fromByteString = fromString . B.unpack
---  fromText = fromString . T.unpack
---  cmap f = fromString . cmap f . toString
---  joinBy = L.intercalate
---  singleton c = fromString [c]
---  cons c = fromString . cons c . toString
---  snoc os c = fromText . flip snoc c . toText $ os
---  reverse = P.reverse
---  dropWhile test = fromString . P.dropWhile test . toString
+  splitOn = T.splitOn
+  isPrefixOf = T.isPrefixOf
+  isSuffixOf = T.isSuffixOf
 
 -- | Generalizes @show@ to return any string type.
 show :: (Show a, Str s) => a -> s
@@ -156,18 +157,15 @@ asByteString func = fromByteString . func . toByteString
 asText :: Str s => (Text -> Text) -> s -> s
 asText func = fromText . func . toText
 
---asOctets :: Str s => ([Octet] -> [Octet]) -> s -> s
---asOctets f = fromOctets . f . toOctets
+asOctets :: Str s => ([Octet] -> [Octet]) -> s -> s
+asOctets f = fromOctets . f . toOctets
 
 -- | Same as @asString@ but for functions with arity 2.
 asString2 :: Str s => (String -> String -> String) -> s -> s -> s
 asString2 f s1 s2 = fromString $ f (toString s1) (toString s2)
 
---asOctets2 :: Str s => ([Octet] -> [Octet] -> [Octet]) -> s -> s -> s
---asOctets2 f s1 s2 = fromOctets $ f (toOctets s1) (toOctets s2)
-
---toOctets :: Str s => s -> [Octet]
---toOctets = US.encode . toString
+asOctets2 :: Str s => ([Octet] -> [Octet] -> [Octet]) -> s -> s -> s
+asOctets2 f s1 s2 = fromOctets $ f (toOctets s1) (toOctets s2)
 
 -- | Joins strings with newline separation, and adds a trailing newline.
 unlines :: Str s => [s] -> s

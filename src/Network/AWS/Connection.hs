@@ -6,10 +6,10 @@
 module Network.AWS.Connection where
 
 import qualified Prelude as P
-import Prelude ( IO, Monad(..), Functor(..), Bool(..), Ord(..), Eq(..)
+import Prelude ( IO, Char, Monad(..), Functor(..), Bool(..), Ord(..), Eq(..)
                , Show
                , Maybe(..), Either(..)
-               , or, otherwise, fst, id, error, not
+               , or, otherwise, fst, id, error, not, map
                , (<), (>), (<=), (>=), (&&), (||), ($), (.))
 import Codec.Utils (Octet)
 import Control.Applicative (Applicative(..), (<$>), (<*))
@@ -28,9 +28,9 @@ import Data.String (IsString(..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Network.Http.Client (Method(..), Request, Response, buildRequest, http)
-import System.Environment
-import System.Time
-import System.Locale
+import System.Environment (getEnvironment)
+import System.Time (getClockTime, toUTCTime, ctTZName, formatCalendarTime)
+import System.Locale (defaultTimeLocale)
 import Text.Str hiding (error)
 import Text.URI (URI(..), mergeURIs)
 
@@ -178,12 +178,12 @@ addHeaders cmd = do
                 , ("x-amz-date", date)]
   return cmd {s3Headers = headers <> s3Headers cmd}
 
--- | Constructs a "canonical request".
+-- | Munges information from the command into a "canonical request".
 canonicalRequest :: Str s => S3Command s -> IO s
 canonicalRequest cmd = do
   S3Command{..} <- addHeaders cmd
   let sortByKey = L.sortBy $ \a b -> fst a `compare` fst b
-      doKey = encodeUri True . cmap toLower
+      doKey = encodeUri True . smap toLower
       doVal = maybe "" (encodeUri True . trim)
       encodeKV (k, v) = doKey k <> "=" <> doVal v
       addSlash = asString $ \case {'/':s -> '/':s; s -> '/':s}
@@ -199,20 +199,20 @@ canonicalRequest cmd = do
 -- | Implementation of AWS's rules for constructing the string to sign
 stringToSign :: Str s => S3Command s -> IO s
 stringToSign cmd@(S3Command{..}) = joinLines <$> parts where
-  parts = do stamp <- timeFmatLong
-             scope <- mkScope
-             request <- canonicalRequest cmd
-             return ["AWS4-HMAC-SHA256", stamp, scope, hexHash request]
-  mkScope = do
-    date <- timeFmatShort
-    let region = awsRegion $ awsConfig s3Connection
-    return $ joinSlashes [date, region, "s3", "aws4_request"]
+  parts = do 
+    stamp <- timeFmatLong
+    scope <- do
+      date <- timeFmatShort
+      let region = awsRegion $ awsConfig s3Connection
+      return $ joinSlashes [date, region, "s3", "aws4_request"]
+    request <- canonicalRequest cmd
+    return ["AWS4-HMAC-SHA256", stamp, scope, hexHash request]
 
 -- | Computes a signature according to the Version 4 rules.
-v4Signature :: Str s => AwsConnection s -> IO ByteString
-v4Signature AwsConnection{..} = do
+v4Signature :: Str s => AwsConnection s -> IO s
+v4Signature AwsConnection{..} = fromByteString <$> do
   date <- timeFmatShort
-  let keys = toByteString <$> ["AWS4" <> awsSecretKey awsCredentials
+  let keys = map toByteString ["AWS4" <> awsSecretKey awsCredentials
                               , date, awsRegion awsConfig
                               , awsService awsConfig, "aws4_request"]
   return $ B16.encode $ foldl1 hmac256 keys
@@ -254,13 +254,15 @@ encodeUri :: Str s => Bool -> s -> s
 encodeUri encodeSlash = asString go where
   go "" = ""
   go (c:cs) | ok c = c : go cs
-            | otherwise = hex c <> go cs
+            | otherwise = charToHex c <> go cs
   ok c = or [ c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c == '_'
             , c >= '0' && c <= '9', c == '-', c == '~', c == '.'
             , not encodeSlash && c == '/']
-  -- | `hex` converts a character to %H, where H is the representation in hex.
-  -- For example, `hex ' ' == "%20"`.
-  hex c = fromByteString $ cmap toUpper $ cons '%' $ B16.encode $ singleton c
+
+-- | Converts a character to @"%H"@, where @H@ is the representation in hex.
+-- For example, @charToHex ' ' == "%20"@, and @charToHex '/' == "%2F"@.
+charToHex :: Str s => Char -> s
+charToHex = fromByteString . smap toUpper . cons '%' . B16.encode . singleton
 
 ---------------------------------------------------------------------
 -- Tests (for debugging)

@@ -1,3 +1,5 @@
+-- A module for testing that the various hash functions for AWS are being 
+-- implemented correctly. Will not be in the final library.
 {-# LANGUAGE OverloadedStrings #-}
 module Network.AWS.TestHash where
 
