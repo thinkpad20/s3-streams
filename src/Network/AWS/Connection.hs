@@ -2,14 +2,15 @@
              RecordWildCards,
              LambdaCase,
              ViewPatterns,
-             ScopedTypeVariables #-}
+             ScopedTypeVariables,
+             NoMonomorphismRestriction #-}
 module Network.AWS.Connection where
 
 import qualified Prelude as P
 import Prelude ( IO, Char, Monad(..), Functor(..), Bool(..), Ord(..), Eq(..)
                , Show
                , Maybe(..), Either(..)
-               , or, otherwise, fst, id, error, not, map
+               , or, otherwise, fst, id, error, not, map, print
                , (<), (>), (<=), (>=), (&&), (||), ($), (.))
 import Codec.Utils (Octet)
 import Control.Applicative (Applicative(..), (<$>), (<*))
@@ -36,6 +37,7 @@ import Text.URI (URI(..), mergeURIs)
 
 ---------------------------------------------------------------------
 -- Data types
+-- The @str@ in these types must be a type that implements @Str@.
 ---------------------------------------------------------------------
 
 -- | Stores the key id and secret key for an AWS transaction.
@@ -208,14 +210,21 @@ stringToSign cmd@(S3Command{..}) = joinLines <$> parts where
     request <- canonicalRequest cmd
     return ["AWS4-HMAC-SHA256", stamp, scope, hexHash request]
 
--- | Computes a signature according to the Version 4 rules.
-v4Signature :: Str s => AwsConnection s -> IO s
-v4Signature AwsConnection{..} = fromByteString <$> do
+-- | Generates a one-time secret key according to the Version 4 rules.
+v4Key :: Str s => AwsConnection s -> IO ByteString
+v4Key AwsConnection{..} = do
   date <- timeFmatShort
   let keys = map toByteString ["AWS4" <> awsSecretKey awsCredentials
                               , date, awsRegion awsConfig
                               , awsService awsConfig, "aws4_request"]
-  return $ B16.encode $ foldl1 hmac256 keys
+  return $ foldl1 hmac256 keys
+
+-- | Computes a signature according to the Version 4 rules.
+v4Signature :: Str s => S3Command s -> IO ByteString
+v4Signature cmd@(S3Command{..}) = do
+  key <- v4Key s3Connection
+  tosign <- stringToSign cmd
+  return $ hmac256 key $ toByteString tosign
 
 -- | Hashes with HMAC, using the given secret key.
 hmac256 :: ByteString -> ByteString -> ByteString
@@ -268,19 +277,54 @@ charToHex = fromByteString . smap toUpper . cons '%' . B16.encode . singleton
 -- Tests (for debugging)
 ---------------------------------------------------------------------
 
-testSecret :: Text
-testSecret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+-- PART 1: using examples from 
+-- http://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html
 
-testKeyId :: Text
+testSecret :: ByteString
+testSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+testKeyId :: ByteString
 testKeyId = "AKIAIOSFODNN7EXAMPLE"
 
-testConnection :: IO (AwsConnection Text)
+testConnection :: IO (AwsConnection ByteString)
 testConnection = createConnection config where
   creds = AwsCredentials testKeyId testSecret
   config = defaultConfig {awsGivenCredentials = Directly creds}
 
-testCommand :: IO (S3Command Text)
+testCommand :: IO (S3Command ByteString)
 testCommand = do con <- testConnection
                  return $ s3GetCmd con bucket object
   where bucket = "examplebucket"
         object = "test.txt"
+
+-- PART 2: using examples from
+-- http://docs.aws.amazon.com/general/latest/gr/sigv4-calculate-signature.html
+
+--testSecret2 :: ByteString
+--testSecret2 = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+
+--correctStringToSign :: ByteString
+--correctStringToSign = joinLines 
+--  [ "AWS4-HMAC-SHA256" , "20110909T233600Z"
+--  , "20110909/us-east-1/iam/aws4_request"
+--  , "3511de7e95d28ecd39e9513b642aee07e54f4941150d8df8bf94b328ef7e55e2"]
+
+--badDerivedKey :: ByteString
+--badDerivedKey = foldl1 hmac256 
+--  ["AWS4" <> testSecret, "20130524", "us-east-1", "s3", "aws4_request"]
+
+--testDerivedKey :: ByteString
+--testDerivedKey = foldl1 hmac256
+--  ["AWS4" <> testSecret2, "20110909", "us-east-1", "iam", "aws4_request"]
+
+--testSignedString :: ByteString
+--testSignedString = B16.encode $ hmac256 testDerivedKey correctStringToSign
+
+--correctOctets :: [Octet]
+--correctOctets = [152, 241, 216, 137, 254, 196, 244, 66, 26, 220, 82, 43, 171, 12, 225, 248, 46, 105, 41, 194, 98, 237, 21, 229, 169, 76, 144, 239, 209, 227, 176, 231]
+
+--correctString :: ByteString
+--correctString = B.pack correctOctets
+
+--testCorrectString :: ByteString
+--testCorrectString = B16.encode $ hmac256 correctString correctStringToSign

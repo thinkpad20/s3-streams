@@ -3,3 +3,4 @@ simple.hs
 cabal.sandbox.config
 dist
 __MACOSX
+test

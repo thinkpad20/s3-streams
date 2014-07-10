@@ -11,6 +11,7 @@ module Text.Str (
   , asByteString
   , asText
   , asString2
+  , asByteString2
   , unlines
   , putStrLn
   ) where
@@ -27,6 +28,7 @@ import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Base16 as B16
 import Data.ByteString (ByteString)
 import Codec.Utils (Octet)
 
@@ -46,6 +48,8 @@ class (IsString s, Show s, Ord s, Monoid s) => Str s where
   toByteString :: s -> ByteString
   toText :: s -> Text
   toOctets :: s -> [Octet]
+  toHex :: s -> s
+  toHex = asByteString B16.encode
   fromText :: Text -> s
   fromByteString :: ByteString -> s
   fromOctets :: [Octet] -> s
@@ -163,6 +167,10 @@ asOctets f = fromOctets . f . toOctets
 -- | Same as @asString@ but for functions with arity 2.
 asString2 :: Str s => (String -> String -> String) -> s -> s -> s
 asString2 f s1 s2 = fromString $ f (toString s1) (toString s2)
+
+-- | Same as @asByteString@ but for functions with arity 2.
+asByteString2 :: Str s => (ByteString -> ByteString -> ByteString) -> s -> s -> s
+asByteString2 f s1 s2 = fromByteString $ f (toByteString s1) (toByteString s2)
 
 asOctets2 :: Str s => ([Octet] -> [Octet] -> [Octet]) -> s -> s -> s
 asOctets2 f s1 s2 = fromOctets $ f (toOctets s1) (toOctets s2)
