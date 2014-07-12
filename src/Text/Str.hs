@@ -1,4 +1,7 @@
-{-# LANGUAGE OverloadedStrings, TypeSynonymInstances, FlexibleInstances #-}
+{-# LANGUAGE OverloadedStrings, 
+             TypeSynonymInstances, 
+             FlexibleInstances,
+             LambdaCase #-}
 module Text.Str (
     Str(..)
   , show
@@ -12,6 +15,10 @@ module Text.Str (
   , asText
   , asString2
   , asByteString2
+  , wrapText
+  , wrapString
+  , wrapByteString
+  , wrapByteString2
   , unlines
   , putStrLn
   ) where
@@ -65,6 +72,10 @@ class (IsString s, Show s, Ord s, Hashable s, Monoid s) => Str s where
   lower = smap toLower
   upper :: s -> s
   upper = smap toUpper
+  capitalize :: s -> s
+  capitalize = asString $ \case
+    "" -> ""
+    (c:cs) -> toUpper c : cs
   reverse :: s -> s
   length :: s -> Int
   dropWhile :: (Char -> Bool) -> s -> s
@@ -153,6 +164,10 @@ wrapString f = f . toString
 -- | Generalizes functions that take a @ByteString@.
 wrapByteString :: Str s => (ByteString -> a) -> s -> a
 wrapByteString f = f . toByteString
+
+-- | Generalizes functions that take two @ByteStrings@.
+wrapByteString2 :: Str s => (ByteString -> ByteString -> a) -> s -> s -> a
+wrapByteString2 f s1 s2 = f (toByteString s1) (toByteString s2)
 
 -- | Converts a function that takes a @Text@ into one that takes any @Str@.
 wrapText :: Str s => (Text -> a) -> s -> a

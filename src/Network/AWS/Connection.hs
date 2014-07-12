@@ -11,7 +11,8 @@ import Prelude ( IO, Char, Monad(..), Functor(..), Bool(..), Ord(..), Eq(..)
                , Show
                , Maybe(..), Either(..)
                , or, otherwise, fst, id, error, not, map, print, filter
-               , (<), (>), (<=), (>=), (&&), (||), ($), (.))
+               , uncurry
+               , (<), (>), (<=), (>=), (=<<), (&&), (||), ($), (.))
 import Codec.Utils (Octet)
 import Control.Applicative (Applicative(..), (<$>), (<*))
 import Control.Monad (when)
@@ -34,7 +35,9 @@ import Data.Maybe (maybe, isJust, isNothing, fromJust)
 import Data.String (IsString(..))
 import Data.Text (Text)
 import qualified Data.Text as T
-import Network.Http.Client (Method(..), Request, Response, buildRequest, http)
+import Network.Http.Client ( Method(..), Request, Response, Hostname, Port
+                           , buildRequest, http, setHostname, setHeader
+                           )
 import System.Environment (getEnvironment)
 import System.Time (getClockTime, toUTCTime, ctTZName, formatCalendarTime)
 import System.Locale (defaultTimeLocale)
@@ -59,8 +62,11 @@ class Aws a => Canonical a where
 
 -- | Class of things that can be made into requests.
 class Req a where
+  getMethod :: Str s => a s -> Method
   getHeaders :: Str s => a s -> [(s, s)]
   getHost :: Str s => a s -> s
+  getPort :: Str s => a s -> Port
+  getUri :: Str s => a s -> s
 
 ---------------------------------------------------------------------
 -- Data types
@@ -114,6 +120,13 @@ instance Aws AwsConnection where
 
 instance Aws S3Command where
   getCon = s3Connection
+  
+instance Req S3Command where
+  getMethod = s3Method
+  getHeaders S3Command{..} = M.toList s3Headers
+  getHost cmd = s3Bucket cmd <> "." <> getHostName cmd
+  getPort _ = 80
+  getUri S3Command{..} = addSlash s3Object
   
 -- | Various getters for Aws types:
 getCreds :: (Aws aws, Str s) => aws s -> AwsCredentials s
@@ -223,7 +236,6 @@ setBucket bucket = modify $ \c -> c {s3Bucket = bucket}
 -- | Sets the S3 method.
 setObject :: (Str s, Monad m) => s -> S3Builder' s m
 setObject object = do
-  let addSlash = asString $ \case {'/':s -> '/':s; s -> '/':s}
   modify $ \c -> c {s3Object = addSlash object}
 
 -- | Adds an arbitrary header.
@@ -306,17 +318,26 @@ v4Signature :: (Functor io, MonadIO io, Canonical aws, Str s)
 v4Signature aws = do
   key <- v4Key aws
   tosign <- stringToSign aws
-  return $ hmac256 key $ toByteString tosign
+  return $ toHex $ hmac256 key $ toByteString tosign
 
 ---------------------------------------------------------------------
 -- Building AWS Requests
 ---------------------------------------------------------------------
 
-awsRequest :: (Functor io, MonadIO io, Canonical aws, Str s) 
+awsRequest :: (Functor io, MonadIO io, Req aws, Canonical aws, Str s) 
            => aws s -> io Request
-awsRequest aws = P.undefined -- buildRequest $ do
-  --http s3Method $ "/" <> s3Object
-  --P.undefined
+awsRequest aws = do
+  (dateStr :: ByteString) <- timeFmatHttpDate
+  auth <- v4Signature aws
+  liftIO $ buildRequest $ do
+    http (getMethod aws) $ (toByteString $ getUri aws)
+    setHostname (toByteString $ getHost aws) (getPort aws)
+    forM_ (getHeaders aws) $ \(k, v) ->
+      wrapByteString2 setHeader (cap k) v
+    setHeader "Date" dateStr
+    setHeader "Authorization" auth
+  where cap h | isPrefixOf "x-" h = h
+              | otherwise = capitalize h
 
 ---------------------------------------------------------------------
 -- Utility functions
@@ -331,11 +352,15 @@ currentTimeFmat (toString -> str) = do
 
 -- | The "short format" string AWS expects
 timeFmatShort :: (Str s, MonadIO io) => io s
-timeFmatShort = liftIO $ currentTimeFmat "20130524" -- "%Y%m%d"
+timeFmatShort = currentTimeFmat "20130524" -- "%Y%m%d"
 
 -- | The "long format" string AWS expects
 timeFmatLong :: (Str s, MonadIO io) => io s
-timeFmatLong = liftIO $ currentTimeFmat "20130524T000000Z" -- "%Y%m%dT000000Z"
+timeFmatLong = currentTimeFmat "20130524T000000Z" -- "%Y%m%dT000000Z"
+
+-- | The time format for a Date header.
+timeFmatHttpDate :: (Str s, MonadIO io) => io s
+timeFmatHttpDate = currentTimeFmat "Fri, 24 May 2013 00:00:00 GMT"
 
 -- | Joins two URI strings together.
 joinUri :: Str s => s -> s -> s
@@ -357,6 +382,10 @@ infixl 9 ~>
 -- | Sorts a list of tuples by the first tuple
 sortByKey :: Ord a => [(a, b)] -> [(a, b)]
 sortByKey = L.sortBy $ \a b -> fst a `compare` fst b
+
+-- | Adds a preceding forward slash if not already present.
+addSlash :: Str s => s -> s
+addSlash = asString $ \case {'/':s -> '/':s; s -> '/':s}
 
 -- | Returns a properly-encoded URI string. @encodeSlash@ determines whether
 -- a slash will be left as-is (if False), or replaced with @%2F@.
@@ -415,6 +444,31 @@ correctCanonRequest = joinLines
   , ""
   , "host;range;x-amz-content-sha256;x-amz-date"
   , "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]
+  
+correctStringToSign :: ByteString
+correctStringToSign = joinLines
+  [ "AWS4-HMAC-SHA256"
+  , "20130524T000000Z"
+  , "20130524/us-east-1/s3/aws4_request"
+  , "7344ae5b7ee6c3e7e6b0fe0640412a37625d1fbfff95c48bbb2dc43964946972"
+  ]
+  
+correctSignature :: ByteString
+correctSignature = 
+  "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
+
+correctRequest :: IO Request
+correctRequest = buildRequest $ do
+  http GET "/test.txt"
+  setHostname "examplebucket.s3.amazonaws.com" 80
+  setHeader "Authorization" correctSignature
+  setHeader "Range" "bytes=0-9"
+  setHeader "Date" "Fri, 24 May 2013 00:00:00 GMT"
+  setHeader "x-amz-content-sha256" emptyStrSha
+  setHeader "x-amz-date" "20130524T000000Z"
+  where 
+    emptyStrSha =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 assertEqual :: (Str a) => a -> a -> P.String -> IO ()
 assertEqual a b msg = 
@@ -425,14 +479,20 @@ assertEqual a b msg =
       putStrLn ("\nDoes not equal\n" :: P.String)
       putStrLn b
     else
-      putStrLn ("Assertion succeeded" :: P.String)
+      putStrLn ("Assertion succeeded: (" <> msg <> ")")
 
 runTest :: IO ()
 runTest = do
-  con <- testConnection
   cmd <- testCommand
   let creq = canonicalRequest cmd
   assertEqual creq correctCanonRequest "canonical request"
+  s2s <- stringToSign cmd
+  assertEqual s2s correctStringToSign "string to sign"
+  sig <- v4Signature cmd
+  assertEqual sig correctSignature "signature"
+  req <- awsRequest cmd
+  corReq <- correctRequest
+  assertEqual (show req :: ByteString) (show corReq) "request"
 
 
 -- PART 2: using examples from
