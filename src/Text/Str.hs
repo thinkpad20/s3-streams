@@ -17,12 +17,14 @@ module Text.Str (
   ) where
 
 import qualified Prelude as P
-import Prelude (IO, Show, String, Char, Bool, Ord(..), (.), id, ($), flip)
+import Prelude (IO, Show, String, Char, Bool, Int, Ord(..), (.), id, ($), flip)
 import qualified Codec.Binary.UTF8.String as US
-import Data.Char (isSpace)
+import Data.Char (isSpace, toLower, toUpper)
+import Data.Hashable
 import Data.Monoid
 import Data.String (IsString(..))
 import qualified Data.List as L
+import qualified Data.List.Utils as L
 import qualified Data.Text as T
 import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
@@ -43,7 +45,7 @@ import Codec.Utils (Octet)
 -- (see the various @as-@ functions). @Str@ extends several useful classes, 
 -- perhaps most importantly @IsString@, which lets us use string literals to 
 -- represent @Str@s.
-class (IsString s, Show s, Ord s, Monoid s) => Str s where 
+class (IsString s, Show s, Ord s, Hashable s, Monoid s) => Str s where 
   toString :: s -> String
   toByteString :: s -> ByteString
   toText :: s -> Text
@@ -59,7 +61,12 @@ class (IsString s, Show s, Ord s, Monoid s) => Str s where
   singleton :: Char -> s
   cons :: Char -> s -> s
   snoc :: s -> Char -> s
+  lower :: s -> s
+  lower = smap toLower
+  upper :: s -> s
+  upper = smap toUpper
   reverse :: s -> s
+  length :: s -> Int
   dropWhile :: (Char -> Bool) -> s -> s
   isPrefixOf :: s -> s -> Bool
   isSuffixOf :: s -> s -> Bool
@@ -77,6 +84,7 @@ instance Str String where
   fromOctets = US.decode
   joinBy = L.intercalate
   smap = P.map
+  splitOn = L.split
   singleton c = [c]
   cons = (:)
   snoc s c = s <> [c]
@@ -84,6 +92,7 @@ instance Str String where
   dropWhile = P.dropWhile
   isPrefixOf = L.isPrefixOf
   isSuffixOf = L.isSuffixOf
+  length = L.length
 
 instance Str ByteString where 
   toString = BC.unpack
@@ -96,12 +105,14 @@ instance Str ByteString where
   smap = BC.map
   joinBy = BC.intercalate
   singleton = BC.singleton
+  splitOn = P.undefined
   cons = BC.cons
   snoc = BC.snoc
   reverse = BC.reverse
   dropWhile = BC.dropWhile
   isPrefixOf = B.isPrefixOf
   isSuffixOf = B.isSuffixOf
+  length = B.length
 
 instance Str Text where 
   toString = T.unpack
@@ -121,6 +132,7 @@ instance Str Text where
   splitOn = T.splitOn
   isPrefixOf = T.isPrefixOf
   isSuffixOf = T.isSuffixOf
+  length = T.length
 
 -- | Generalizes @show@ to return any string type.
 show :: (Show a, Str s) => a -> s

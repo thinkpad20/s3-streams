@@ -10,21 +10,27 @@ import qualified Prelude as P
 import Prelude ( IO, Char, Monad(..), Functor(..), Bool(..), Ord(..), Eq(..)
                , Show
                , Maybe(..), Either(..)
-               , or, otherwise, fst, id, error, not, map, print
+               , or, otherwise, fst, id, error, not, map, print, filter
                , (<), (>), (<=), (>=), (&&), (||), ($), (.))
 import Codec.Utils (Octet)
 import Control.Applicative (Applicative(..), (<$>), (<*))
+import Control.Monad (when)
+import Control.Monad.Trans (MonadIO(..), lift)
+import Control.Monad.State.Strict (StateT(..), execStateT, modify, gets)
 import Crypto.Hash (SHA256(..), hmacAlg)
 import qualified Crypto.Hash.SHA256 as SHA256
 import Data.Byteable (toBytes)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Base16 as B16
-import Data.Char (toUpper, toLower)
-import Data.Foldable (foldl1)
+import Data.Foldable (foldl1, forM_)
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as M
+import Data.Set (Set)
+import qualified Data.Set as S
 import qualified Data.List as L
 import Data.Monoid
-import Data.Maybe (maybe)
+import Data.Maybe (maybe, isJust, isNothing, fromJust)
 import Data.String (IsString(..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -34,6 +40,27 @@ import System.Time (getClockTime, toUTCTime, ctTZName, formatCalendarTime)
 import System.Locale (defaultTimeLocale)
 import Text.Str hiding (error)
 import Text.URI (URI(..), mergeURIs)
+
+---------------------------------------------------------------------
+-- AWS Type Classes
+-- Abstracts some common capabilities of AWS-related types.
+---------------------------------------------------------------------
+
+-- | Class of things which contain AWS configuration.
+class Aws a where
+  getCon :: Str s => a s -> AwsConnection s
+
+-- | The class of types from which we can generate CanonicalHeaders.
+class Aws a => Canonical a where 
+  -- | Builds the canonical list of headers.
+  canonicalHeaders :: Str s => a s -> [(s, s)]
+  -- | Munges information from the command into a "canonical request".
+  canonicalRequest :: Str s => a s -> s
+
+-- | Class of things that can be made into requests.
+class Req a where
+  getHeaders :: Str s => a s -> [(s, s)]
+  getHost :: Str s => a s -> s
 
 ---------------------------------------------------------------------
 -- Data types
@@ -77,9 +104,30 @@ data S3Command str = S3Command
   , s3Bucket :: str
   , s3Object :: str
   , s3Query :: [(str, Maybe str)]
-  , s3Headers :: [(str, str)]
+  , s3Headers :: HashMap str str
+  , s3ExcludeHeaders :: Set str
   , s3Body :: str
   } deriving (Show)
+
+instance Aws AwsConnection where
+  getCon = id
+
+instance Aws S3Command where
+  getCon = s3Connection
+  
+-- | Various getters for Aws types:
+getCreds :: (Aws aws, Str s) => aws s -> AwsCredentials s
+getCreds = awsCredentials . getCon
+getConfig :: (Aws aws, Str s) => aws s -> AwsConfig s
+getConfig = awsConfig . getCon
+getHostName :: (Aws aws, Str s) => aws s -> s
+getHostName = awsHostName . getConfig
+getRegion :: (Aws aws, Str s) => aws s -> s
+getRegion = awsRegion . getConfig
+getSecurity :: (Aws aws, Str s) => aws s -> Bool
+getSecurity = awsIsSecure . getConfig
+getService :: (Aws aws, Str s) => aws s -> s
+getService = awsService . getConfig
 
 ---------------------------------------------------------------------
 -- Loading configurations
@@ -94,8 +142,9 @@ secretKeyKey :: P.String
 secretKeyKey = "AWS_SECRET_ACCESS_KEY"
 
 -- | Creates an AwsConnection using a config.
-createConnection :: Str s => AwsConfig s -> IO (AwsConnection s)
-createConnection cfg@(AwsConfig{..}) = AwsConnection cfg <$> creds where
+createConnection :: (Functor io, MonadIO io, Str s) 
+                 => AwsConfig s -> io (AwsConnection s)
+createConnection cfg@AwsConfig{..} = AwsConnection cfg <$> creds where
   creds = case awsGivenCredentials of
     Directly creds -> return creds
     FromFile file -> findCredentialsFromFile file >>= \case
@@ -123,155 +172,207 @@ defaultConfig = AwsConfig { awsHostName = "s3.amazonaws.com"
                           , awsGivenCredentials = FromEnv }
 
 -- | Uses the default config to create an AwsConnection.
-defaultConnection :: Str s => IO (AwsConnection s)
+defaultConnection :: (Functor io, MonadIO io, Str s) => io (AwsConnection s)
 defaultConnection = createConnection defaultConfig
 
 -- | Looks for credentials in the environment.
-findCredentialsFromEnv :: Str s => IO (Maybe (AwsCredentials s))
-findCredentialsFromEnv = getEnvKey accessIdKey >>= \case
-  Nothing -> return Nothing
-  Just i -> getEnvKey secretKeyKey >>= \case
-    Just k -> return $ Just $ AwsCredentials i k
-    Nothing -> getEnvKey "AWS_ACCESS_KEY_SECRET" >>= \case
-      Just k -> return $ Just $ AwsCredentials i k
-      Nothing -> return Nothing
-  where getEnvKey s = fmap fromString . L.lookup s <$> getEnvironment
+findCredentialsFromEnv :: (Functor io, MonadIO io, Str s) 
+                       => io (Maybe (AwsCredentials s))
+findCredentialsFromEnv = do
+  let getEnvKey s = liftIO $ fmap fromString . L.lookup s <$> getEnvironment
+  keyid <- getEnvKey accessIdKey
+  secret <- getEnvKey secretKeyKey
+  if isNothing keyid || isNothing secret then return Nothing
+  else return $ Just $ AwsCredentials (fromJust keyid) (fromJust secret)
 
 -- | Looks for credentials in a config file.
-findCredentialsFromFile :: Str s => s -> IO (Maybe (AwsCredentials s))
+findCredentialsFromFile :: (Functor io, MonadIO io, Str s) 
+                        => s -> io (Maybe (AwsCredentials s))
 findCredentialsFromFile (toString -> path) = P.undefined
 
 ---------------------------------------------------------------------
--- S3 Command wrappers
+-- Building S3 Commands
 ---------------------------------------------------------------------
+
+type S3Builder s m = StateT (S3Command s) m
+type S3Builder' s m = S3Builder s m ()
+
+-- | Builds an S3 command with a series of builder actions, starting with a 
+-- connection.
+buildCommand :: (Str s, Monad m) 
+             => AwsConnection s -> S3Builder s m a -> m (S3Command s)
+buildCommand con steps = execStateT steps $ s3Command con
 
 -- | Produces a base s3 command. Should not be used externally.
 s3Command :: Str s => AwsConnection s -> S3Command s
-s3Command con = S3Command GET con "" "" [] [] ""
+s3Command con = S3Command GET con e e e e e e where e = mempty
 
 -- | An S3 GET command, given a bucket and an object.
 s3GetCmd :: Str s => AwsConnection s -> s -> s -> S3Command s
 s3GetCmd con bucket object = cmd {s3Bucket=bucket,s3Object=object}
   where cmd = s3Command con
 
-s3Request :: Str str => S3Command str -> IO Request
-s3Request S3Command{..} = P.undefined -- buildRequest $ do
-  --http s3Method $ "/" <> s3Object
-  --P.undefined
+-- | Sets the S3 method.
+setMethod :: (Str s, Monad m) => Method -> S3Builder' s m
+setMethod m = modify $ \c -> c {s3Method = m}
+
+-- | Sets the S3 bucket.
+setBucket :: (Str s, Monad m) => s -> S3Builder' s m
+setBucket bucket = modify $ \c -> c {s3Bucket = bucket}
+
+-- | Sets the S3 method.
+setObject :: (Str s, Monad m) => s -> S3Builder' s m
+setObject object = do
+  let addSlash = asString $ \case {'/':s -> '/':s; s -> '/':s}
+  modify $ \c -> c {s3Object = addSlash object}
+
+-- | Adds an arbitrary header.
+addHeader :: (Str s, Monad m) => s -> s -> S3Builder s m ()
+addHeader h val = modify $ \c -> c {s3Headers = M.insert h val $ s3Headers c}
+
+-- | Adds the date header, set with the current date.
+addAmzDateHeader :: (MonadIO io, Str s) => S3Builder s io ()
+addAmzDateHeader = lift timeFmatLong >>= addHeader "x-amz-date"
+
+-- | Computes the hash of the S3 body and adds the content-sha header.
+addContentShaHeader :: (Functor io, MonadIO io, Str s) 
+                    => S3Builder s io ()
+addContentShaHeader = 
+  hexHash <$> gets s3Body >>= addHeader "x-amz-content-sha256"
+
+-- | Adds a header to the exclusion set for this command. The exclusion of 
+-- @Content-Type@ header and any headers starting with @x-amz-@ is disallowed.
+-- Excluded headers are always stored in lower-case.
+excludeHeader :: (Str s, Monad m) => s -> S3Builder s m ()
+excludeHeader (lower -> h) = case lower h of
+  "content-type" -> can'tExclude
+  "host" -> can'tExclude
+  h | isPrefixOf "x-amz-" h -> can'tExclude
+  h -> modify $ \c -> c {s3ExcludeHeaders = S.insert h $ s3ExcludeHeaders c}
+  where can'tExclude = error $ "Can't exclude " <> show h <> " header"
 
 ---------------------------------------------------------------------
 -- Building request signature
--- There are precise rules for how to build, and in particular sign, an 
--- S3 request. For the full rules, from which these implementations are
--- adapted, see: http://docs.aws.amazon.com/AmazonS3/latest/API/
--- sig-v4-header-based-auth.html.
+--
+-- There are precise rules for how to build sign an AWS request. Various API
+-- calls must implement these rules.
 ---------------------------------------------------------------------
+  
+instance Canonical S3Command where
+  -- For the full rules, from which these implementations are
+  -- adapted, see: http://docs.aws.amazon.com/AmazonS3/latest/API/
+  -- sig-v4-header-based-auth.html.
+  -- By default, we will take all headers present. The @s3ExcludeHeaders@ set 
+  -- can be used to specify headers that shouldn't be included in the canonical
+  -- headers. As per the AWS documentation, we must have a host header, so this
+  -- will be auto-generated if not present.
+  canonicalHeaders S3Command{..} = sortByKey $ exclude $ M.toList hdrs where
+    defHost = s3Bucket <> "." <> awsHostName (awsConfig s3Connection)
+    hdrs = s3Headers `M.union` M.singleton "host" defHost
+    exclude = filter (not . \(h, _) -> S.member h s3ExcludeHeaders)
 
--- | Adds some headers that we need to our S3 request.
-addHeaders :: Str s => S3Command s -> IO (S3Command s)
-addHeaders cmd = do
-  let host = awsHostName $ awsConfig $ s3Connection cmd
-      bucket = s3Bucket cmd
-      bodySha = hexHash $ s3Body cmd
-  date <- timeFmatLong
-  let headers = [ ("host", bucket <> "." <> host)
-                , ("range", "bytes=0-9")
-                , ("x-amz-content-sha256", bodySha)
-                , ("x-amz-date", date)]
-  return cmd {s3Headers = headers <> s3Headers cmd}
+  canonicalRequest cmd = joinLines [mtd, uri, qry, hdrs, ks, body] where
+    prepKey = lower ~> encodeUri True
+    prepVal = maybe "" $ trim ~> encodeUri True
+    encodeKV (k, v) = prepKey k <> "=" <> prepVal v
+    qry = joinBy "&" $ fmap encodeKV $ sortByKey $ s3Query cmd
+    uri = encodeUri False $ s3Object cmd
+    putColon (k, v) = k <> ":" <> trim v
+    body = hexHash $ s3Body cmd
+    mtd = show $ s3Method cmd
+    hdrs = unlines $ fmap putColon $ canonicalHeaders cmd
+    ks = joinSemis $ fmap fst $ canonicalHeaders cmd
 
--- | Munges information from the command into a "canonical request".
-canonicalRequest :: Str s => S3Command s -> IO s
-canonicalRequest cmd = do
-  S3Command{..} <- addHeaders cmd
-  let sortByKey = L.sortBy $ \a b -> fst a `compare` fst b
-      doKey = encodeUri True . smap toLower
-      doVal = maybe "" (encodeUri True . trim)
-      encodeKV (k, v) = doKey k <> "=" <> doVal v
-      addSlash = asString $ \case {'/':s -> '/':s; s -> '/':s}
-      uri = encodeUri False $ addSlash s3Object
-      query = joinBy "&" $ fmap encodeKV $ sortByKey s3Query
-      putColon (k, v) = k <> ":" <> v
-      headers = unlines $ fmap putColon $ sortByKey s3Headers
-      headerKeys = joinSemis $ L.sortBy compare $ fmap fst s3Headers
-      bodyHash = hexHash s3Body
-      method = show s3Method
-  return $ joinLines [method, uri, query, headers, headerKeys, bodyHash]
-
--- | Implementation of AWS's rules for constructing the string to sign
-stringToSign :: Str s => S3Command s -> IO s
-stringToSign cmd@(S3Command{..}) = joinLines <$> parts where
-  parts = do 
-    stamp <- timeFmatLong
-    scope <- do
-      date <- timeFmatShort
-      let region = awsRegion $ awsConfig s3Connection
-      return $ joinSlashes [date, region, "s3", "aws4_request"]
-    request <- canonicalRequest cmd
-    return ["AWS4-HMAC-SHA256", stamp, scope, hexHash request]
-
--- | Generates a one-time secret key according to the Version 4 rules.
-v4Key :: Str s => AwsConnection s -> IO ByteString
-v4Key AwsConnection{..} = do
+-- | Implementation of AWS's rules for constructing the string to sign.
+stringToSign :: (Functor io, MonadIO io, Canonical aws, Str s) => aws s -> io s
+stringToSign aws = joinLines <$> do
+  stamp <- timeFmatLong
   date <- timeFmatShort
-  let keys = map toByteString ["AWS4" <> awsSecretKey awsCredentials
-                              , date, awsRegion awsConfig
-                              , awsService awsConfig, "aws4_request"]
-  return $ foldl1 hmac256 keys
+  let scope = joinSlashes [date, getRegion aws, getService aws, "aws4_request"]
+      request = canonicalRequest aws
+  return ["AWS4-HMAC-SHA256", stamp, scope, hexHash request]
+  
+-- | Generates a one-time secret key according to the Version 4 rules.    
+v4Key :: (Functor io, MonadIO io, Aws aws, Str s) => aws s -> io ByteString
+v4Key (getCon -> AwsConnection{..}) = do
+  date <- timeFmatShort
+  return $ foldl1 hmac256 $ map toByteString 
+    ["AWS4" <> awsSecretKey awsCredentials, date, awsRegion awsConfig
+    , awsService awsConfig, "aws4_request"]
 
 -- | Computes a signature according to the Version 4 rules.
-v4Signature :: Str s => S3Command s -> IO ByteString
-v4Signature cmd@(S3Command{..}) = do
-  key <- v4Key s3Connection
-  tosign <- stringToSign cmd
+v4Signature :: (Functor io, MonadIO io, Canonical aws, Str s) 
+            => aws s -> io ByteString
+v4Signature aws = do
+  key <- v4Key aws
+  tosign <- stringToSign aws
   return $ hmac256 key $ toByteString tosign
 
--- | Hashes with HMAC, using the given secret key.
-hmac256 :: ByteString -> ByteString -> ByteString
-hmac256 key msg = toBytes $ hmacAlg SHA256 key msg
+---------------------------------------------------------------------
+-- Building AWS Requests
+---------------------------------------------------------------------
 
--- | Hashes with SHA256, and then encodes in Base16
-hexHash :: Str s => s -> s
-hexHash = asByteString $ B16.encode . SHA256.hash
+awsRequest :: (Functor io, MonadIO io, Canonical aws, Str s) 
+           => aws s -> io Request
+awsRequest aws = P.undefined -- buildRequest $ do
+  --http s3Method $ "/" <> s3Object
+  --P.undefined
 
 ---------------------------------------------------------------------
 -- Utility functions
 ---------------------------------------------------------------------
 
 -- | Given a format string, gets the current time and formats the string.
-currentTimeFmat :: Str s => s -> IO s
+currentTimeFmat :: (MonadIO io, Str s) => s -> io s
 currentTimeFmat (toString -> str) = do 
-  time <- getClockTime
+  time <- liftIO getClockTime
   let timeUTC = (toUTCTime time){ctTZName="GMT"}
   return $ fromString $ formatCalendarTime defaultTimeLocale str timeUTC
 
 -- | The "short format" string AWS expects
-timeFmatShort :: Str s => IO s
-timeFmatShort = currentTimeFmat "20130524" -- "%Y%m%d"
+timeFmatShort :: (Str s, MonadIO io) => io s
+timeFmatShort = liftIO $ currentTimeFmat "20130524" -- "%Y%m%d"
 
 -- | The "long format" string AWS expects
-timeFmatLong :: Str s => IO s
-timeFmatLong = currentTimeFmat "20130524T000000Z" -- "%Y%m%dT000000Z"
+timeFmatLong :: (Str s, MonadIO io) => io s
+timeFmatLong = liftIO $ currentTimeFmat "20130524T000000Z" -- "%Y%m%dT000000Z"
 
 -- | Joins two URI strings together.
 joinUri :: Str s => s -> s -> s
 joinUri = (<>)
+
+-- | Hashes with HMAC, using the given secret key.
+hmac256 :: ByteString -> ByteString -> ByteString
+hmac256 key msg = toBytes $ hmacAlg SHA256 key msg
+
+-- | Hashes with SHA256, and then encodes in Base16.
+hexHash :: Str s => s -> s
+hexHash = asByteString $ B16.encode . SHA256.hash
+
+-- | Left-to-right function composition
+(~>) :: (a -> b) -> (b -> c) -> a -> c
+(~>) = P.flip (.)
+infixl 9 ~>
+
+-- | Sorts a list of tuples by the first tuple
+sortByKey :: Ord a => [(a, b)] -> [(a, b)]
+sortByKey = L.sortBy $ \a b -> fst a `compare` fst b
 
 -- | Returns a properly-encoded URI string. @encodeSlash@ determines whether
 -- a slash will be left as-is (if False), or replaced with @%2F@.
 encodeUri :: Str s => Bool -> s -> s
 encodeUri encodeSlash = asString go where
   go "" = ""
-  go (c:cs) | ok c = c : go cs
+  go (c:cs) | okAsIs c = c : go cs
             | otherwise = charToHex c <> go cs
-  ok c = or [ c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c == '_'
-            , c >= '0' && c <= '9', c == '-', c == '~', c == '.'
-            , not encodeSlash && c == '/']
+  okAsIs c = or [ c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c == '_'
+                , c >= '0' && c <= '9', c == '-', c == '~', c == '.'
+                , not encodeSlash && c == '/']
 
 -- | Converts a character to @"%H"@, where @H@ is the representation in hex.
 -- For example, @charToHex ' ' == "%20"@, and @charToHex '/' == "%2F"@.
 charToHex :: Str s => Char -> s
-charToHex = fromByteString . smap toUpper . cons '%' . B16.encode . singleton
+charToHex = fromByteString . upper . cons '%' . B16.encode . singleton
 
 ---------------------------------------------------------------------
 -- Tests (for debugging)
@@ -292,10 +393,47 @@ testConnection = createConnection config where
   config = defaultConfig {awsGivenCredentials = Directly creds}
 
 testCommand :: IO (S3Command ByteString)
-testCommand = do con <- testConnection
-                 return $ s3GetCmd con bucket object
-  where bucket = "examplebucket"
-        object = "test.txt"
+testCommand = do 
+  con <- testConnection
+  buildCommand con $ do
+    setMethod GET
+    addHeader "range" "bytes=0-9"
+    addAmzDateHeader
+    addContentShaHeader
+    setBucket "examplebucket"
+    setObject "test.txt"
+
+correctCanonRequest :: ByteString
+correctCanonRequest = joinLines 
+  [ "GET"
+  , "/test.txt"
+  , ""
+  , "host:examplebucket.s3.amazonaws.com"
+  , "range:bytes=0-9"
+  , "x-amz-content-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  , "x-amz-date:20130524T000000Z"
+  , ""
+  , "host;range;x-amz-content-sha256;x-amz-date"
+  , "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]
+
+assertEqual :: (Str a) => a -> a -> P.String -> IO ()
+assertEqual a b msg = 
+  if a /= b 
+    then do
+      putStrLn $ "Assertion failed: not equal (" <> msg <> ")"
+      putStrLn a
+      putStrLn ("\nDoes not equal\n" :: P.String)
+      putStrLn b
+    else
+      putStrLn ("Assertion succeeded" :: P.String)
+
+runTest :: IO ()
+runTest = do
+  con <- testConnection
+  cmd <- testCommand
+  let creq = canonicalRequest cmd
+  assertEqual creq correctCanonRequest "canonical request"
+
 
 -- PART 2: using examples from
 -- http://docs.aws.amazon.com/general/latest/gr/sigv4-calculate-signature.html
