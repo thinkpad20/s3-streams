@@ -121,7 +121,7 @@ defaultConfig :: Str s => AwsConfig s
 defaultConfig = AwsConfig { awsHostName = "s3.amazonaws.com"
                           , awsRegion = "us-east-1"
                           , awsService = "s3"
-                          , awsIsSecure = True
+                          , awsIsSecure = False
                           , awsGivenCredentials = FromEnv }
 
 -- | Uses the default config to create an AwsConnection.

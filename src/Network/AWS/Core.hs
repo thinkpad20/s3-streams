@@ -8,6 +8,7 @@ module Network.AWS.Core (
     module Codec.Utils
   , module Control.Applicative
   , module Control.Monad
+  , module Control.Monad.Identity
   , module Control.Monad.Trans
   , module Control.Monad.State.Strict
   , module Data.ByteString
@@ -35,6 +36,7 @@ import Codec.Utils (Octet)
 import Control.Applicative (Applicative(..), (<$>), (<*))
 import Control.Monad (when)
 import Control.Monad.Trans (MonadIO(..), lift)
+import Control.Monad.Identity (Identity(..))
 import Control.Monad.State.Strict (StateT(..), execStateT, modify, gets)
 import Crypto.Hash (SHA256(..), hmacAlg)
 import qualified Crypto.Hash.SHA256 as SHA256
@@ -75,15 +77,15 @@ currentTimeFmat (toString -> str) = do
 
 -- | The "short format" string AWS expects
 timeFmatShort :: (Str s, MonadIO io) => io s
-timeFmatShort = currentTimeFmat "20130524" -- "%Y%m%d"
+timeFmatShort = currentTimeFmat "%Y%m%d" -- "20130524"
 
 -- | The "long format" string AWS expects
 timeFmatLong :: (Str s, MonadIO io) => io s
-timeFmatLong = currentTimeFmat "20130524T000000Z" -- "%Y%m%dT000000Z"
+timeFmatLong = currentTimeFmat "%Y%m%dT%H%M%SZ" -- "20130524T000000Z"
 
 -- | The time format for a Date header.
 timeFmatHttpDate :: (Str s, MonadIO io) => io s
-timeFmatHttpDate = currentTimeFmat "Fri, 24 May 2013 00:00:00 GMT"
+timeFmatHttpDate = currentTimeFmat "%a, %d %B %Y %H:%M:%S %Z"
 
 -- | Joins two URI strings together.
 joinUri :: Str s => s -> s -> s

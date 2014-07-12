@@ -4,3 +4,4 @@ cabal.sandbox.config
 dist
 __MACOSX
 test
+http-streams

@@ -9,7 +9,7 @@ module Network.AWS.S3 where
 import qualified Prelude as P
 import Network.AWS.Core
 import Network.AWS.Connection
-import Network.AWS.Request (Req(..))
+import Network.AWS.Request
 import qualified Data.HashMap.Strict as M
 import qualified Data.Set as S
 
@@ -78,11 +78,6 @@ buildCommand con steps = execStateT steps $ s3Command con
 s3Command :: Str s => AwsConnection s -> S3Command s
 s3Command con = S3Command GET con e e e e e e where e = mempty
 
--- | An S3 GET command, given a bucket and an object.
-s3GetCmd :: Str s => AwsConnection s -> s -> s -> S3Command s
-s3GetCmd con bucket object = cmd {s3Bucket=bucket,s3Object=object}
-  where cmd = s3Command con
-
 -- | Sets the S3 method.
 setMethod :: (Str s, Monad m) => Method -> S3Builder' s m
 setMethod m = modify $ \c -> c {s3Method = m}
@@ -120,3 +115,22 @@ excludeHeader (lower -> h) = case lower h of
   h | isPrefixOf "x-amz-" h -> can'tExclude
   h -> modify $ \c -> c {s3ExcludeHeaders = S.insert h $ s3ExcludeHeaders c}
   where can'tExclude = error $ "Can't exclude " <> show h <> " header"
+  
+---------------------------------------------------------------------
+-- Common S3 Commands
+---------------------------------------------------------------------
+
+-- | An S3 GET command, given a bucket and an object.
+s3GetCmd :: (Str s, Monad m) => s -> s -> AwsConnection s -> m (S3Command s)
+s3GetCmd bucket object con = buildCommand con $ do
+  setBucket bucket
+  setObject object
+  
+-- | Takes a handler for the response, and GETs a bucket/object.
+s3Get :: Str s => s -> s 
+      -> AwsConnection s
+      -> (Response -> InputStream ByteString -> IO a)
+      -> IO a
+s3Get bucket object con handler =
+  s3GetCmd bucket object con >>= performRequest handler
+  
