@@ -17,7 +17,7 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     Network.AWS.Connection
+  exposed-modules:     Network.AWS.Connection, Network.AWS.Request, Network.AWS.Signature, Network.AWS.S3 
   other-extensions:    BangPatterns, OverloadedStrings, FlexibleInstances, RecordWildCards, TypeSynonymInstances
   build-depends:       base >= 4, http-common, http-streams >= 0.7, text >= 1.1.0, bytestring >= 0.10.4.0, base16-bytestring >= 0.1.1.6, old-locale, uri, cryptohash, old-time, Crypto, utf8-string, byteable, MissingH, containers, unordered-containers, mtl, hashable
   hs-source-dirs:      src

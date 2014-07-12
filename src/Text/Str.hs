@@ -4,6 +4,7 @@
              LambdaCase #-}
 module Text.Str (
     Str(..)
+  , IsString(..)
   , show
   , error
   , joinLines
