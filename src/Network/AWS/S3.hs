@@ -121,16 +121,19 @@ excludeHeader (lower -> h) = case lower h of
 ---------------------------------------------------------------------
 
 -- | An S3 GET command, given a bucket and an object.
-s3GetCmd :: (Str s, Monad m) => s -> s -> AwsConnection s -> m (S3Command s)
+s3GetCmd :: (Str s, Functor io, MonadIO io) 
+         => s -> s -> AwsConnection s -> io (S3Command s)
 s3GetCmd bucket object con = buildCommand con $ do
   setBucket bucket
   setObject object
+  addAmzDateHeader
+  addContentShaHeader
   
 -- | Takes a handler for the response, and GETs a bucket/object.
 s3Get :: Str s => s -> s 
       -> AwsConnection s
       -> (Response -> InputStream ByteString -> IO a)
       -> IO a
-s3Get bucket object con handler =
+s3Get bucket object con handler = do
   s3GetCmd bucket object con >>= performRequest handler
   

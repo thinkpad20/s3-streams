@@ -6,6 +6,8 @@ This is an implementation of the AWS S3 API using `http-streams`, an HTTP client
 
 ### Example:
 
+First, load your AWS access key id and secret access key into your environment under the keys `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, respectively. Then, assuming you have the bucket `my_bucket` with object `my_object`, you can run this code:
+
 ```haskell
 import Network.AWS.S3
 import Network.Http.Client
@@ -15,9 +17,11 @@ main = do
   s3Get "my_bucket" "my_object" con debugHandler
 ```
 
+Which will print the contents of `my_object` to stdout.
+
 ### Status:
 
-Still in development and not yet usable.
+Just recently passed the milestone of making a successful GET request. Still quite a ways to go but (it seems) the worst is passed.
 
 ### License: 
 
