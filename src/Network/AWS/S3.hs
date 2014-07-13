@@ -16,16 +16,22 @@ import qualified Data.Set as S
 -- | All of the information needed for an S3 command. The type variable must
 -- be of the @Str@ class.
 data S3Command str = S3Command
-  { s3Method :: Method
-  , s3Connection :: AwsConnection str
+  { s3Connection :: AwsConnection str
+  , s3Method :: Method
   , s3Bucket :: str
   , s3Object :: str
+  , s3StorageClass :: StorageClass
   , s3Query :: [(str, Maybe str)]
   , s3Headers :: HashMap str str
   , s3ExcludeHeaders :: Set str
   , s3Body :: str
   } deriving (Show)
-  
+
+data StorageClass = STANDARD
+                  | REDUCED_REDUNDANCY
+                  | GLACIER
+                  deriving (Show)
+
 instance Aws S3Command where
   getCon = s3Connection
   
@@ -35,6 +41,7 @@ instance Req S3Command where
   getHost cmd = s3Bucket cmd <> "." <> getHostName cmd
   getPort _ = 80
   getUri S3Command{..} = addSlash s3Object
+  getBody = toByteString . s3Body
 
 instance Canonical S3Command where
   -- For the full rules, from which these implementations are
@@ -72,11 +79,26 @@ type S3Builder' s m = S3Builder s m ()
 -- connection.
 buildCommand :: (Str s, Monad m) 
              => AwsConnection s -> S3Builder s m a -> m (S3Command s)
-buildCommand con steps = execStateT steps $ s3Command con
+buildCommand con steps = execStateT steps $ baseS3Command con
 
--- | Produces a base s3 command. Should not be used externally.
-s3Command :: Str s => AwsConnection s -> S3Command s
-s3Command con = S3Command GET con e e e e e e where e = mempty
+-- | Same as @buildCommand@ but adds the date and content sha automatically.
+buildCommand' :: (Str s, MonadIO io, Functor io)
+              => AwsConnection s -> S3Builder s io a -> io (S3Command s)
+buildCommand' con steps = execStateT steps' $ baseS3Command con where
+  steps' = steps >> addAmzDateHeader >> addContentShaHeader
+
+-- | Produces a base s3 command.
+baseS3Command :: Str s => AwsConnection s -> S3Command s
+baseS3Command con = S3Command 
+  { s3Connection = con
+  , s3Method = GET
+  , s3Bucket = ""
+  , s3Object = ""
+  , s3StorageClass = STANDARD
+  , s3Query = []
+  , s3Headers = mempty
+  , s3ExcludeHeaders = mempty
+  , s3Body = "" }
 
 -- | Sets the S3 method.
 setMethod :: (Str s, Monad m) => Method -> S3Builder' s m
@@ -86,10 +108,17 @@ setMethod m = modify $ \c -> c {s3Method = m}
 setBucket :: (Str s, Monad m) => s -> S3Builder' s m
 setBucket bucket = modify $ \c -> c {s3Bucket = bucket}
 
--- | Sets the S3 method.
+-- | Sets the S3 object.
 setObject :: (Str s, Monad m) => s -> S3Builder' s m
-setObject object = do
-  modify $ \c -> c {s3Object = addSlash object}
+setObject object = modify $ \c -> c {s3Object = addSlash object}
+
+-- | Sets the body of the request.
+setBody :: (Str s, Monad m) => s -> S3Builder' s m
+setBody body = modify $ \c -> c {s3Body = body}
+  
+-- | Sets the storage option for an S3 uploaded file.
+setStorageClass :: (Str s, Monad m) => StorageClass -> S3Builder' s m
+setStorageClass = addHeader "x-amz-storage-class" . show
 
 -- | Adds an arbitrary header.
 addHeader :: (Str s, Monad m) => s -> s -> S3Builder s m ()
@@ -103,7 +132,10 @@ addAmzDateHeader = lift timeFmatLong >>= addHeader "x-amz-date"
 addContentShaHeader :: (Functor io, MonadIO io, Str s) 
                     => S3Builder s io ()
 addContentShaHeader = 
-  hexHash <$> gets s3Body >>= addHeader "x-amz-content-sha256"
+  addHeader "x-amz-content-sha256" =<< hexHash <$> gets s3Body
+  
+-- | Adds a file to the body of the S3 Request.
+
 
 -- | Adds a header to the exclusion set for this command. The exclusion of 
 -- @Content-Type@ header and any headers starting with @x-amz-@ is disallowed.
@@ -121,19 +153,17 @@ excludeHeader (lower -> h) = case lower h of
 ---------------------------------------------------------------------
 
 -- | An S3 GET command, given a bucket and an object.
-s3GetCmd :: (Str s, Functor io, MonadIO io) 
-         => s -> s -> AwsConnection s -> io (S3Command s)
-s3GetCmd bucket object con = buildCommand con $ do
+s3Get :: (Str s, Functor io, MonadIO io) 
+      => s -> s -> AwsConnection s -> io (S3Command s)
+s3Get bucket object con = buildCommand' con $ do
   setBucket bucket
   setObject object
-  addAmzDateHeader
-  addContentShaHeader
   
--- | Takes a handler for the response, and GETs a bucket/object.
-s3Get :: Str s => s -> s 
-      -> AwsConnection s
-      -> (Response -> InputStream ByteString -> IO a)
-      -> IO a
-s3Get bucket object con handler = do
-  s3GetCmd bucket object con >>= performRequest handler
-  
+-- | An S3 POST command, given a bucket, object name, and storage type.
+s3Put :: (Str s, Functor io, MonadIO io)
+       => StorageClass -> s -> s -> AwsConnection s -> io (S3Command s)
+s3Put stype bucket object con = buildCommand' con $ do
+  setBucket bucket
+  setObject object
+  setMethod PUT
+  setStorageClass stype

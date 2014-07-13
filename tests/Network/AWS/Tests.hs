@@ -105,6 +105,16 @@ runTest = do
   corReq <- correctRequest
   assertEqual (show req :: ByteString) (show corReq) "request"
 
+testPut :: IO ()
+testPut = do
+  con <- defaultConnection
+  (cmd :: S3Command Text) <- buildCommand' con $ do
+    setMethod PUT
+    setStorageClass REDUCED_REDUNDANCY
+    setBucket "cf-templates-gri5ttq59t5e-us-east-1"
+    setObject "foo.txt"
+    setBody "Hello, world!"
+  performRequest debugHandler cmd
 
 -- PART 2: using examples from
 -- http://docs.aws.amazon.com/general/latest/gr/sigv4-calculate-signature.html

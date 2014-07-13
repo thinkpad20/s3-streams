@@ -9,12 +9,13 @@ This is an implementation of the AWS S3 API using `http-streams`, an HTTP client
 First, load your AWS access key id and secret access key into your environment under the keys `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, respectively. Then, assuming you have the bucket `my_bucket` with object `my_object`, you can run this code:
 
 ```haskell
-import Network.AWS.S3
-import Network.Http.Client
+import Network.AWS.S3 (defaultConnection, s3Get, performRequest)
+import Network.Http.Client (debugHandler)
 
 main = do
   con <- defaultConnection
-  s3Get "my_bucket" "my_object" con debugHandler
+  cmd <- s3Get "my_bucket" "my_object" con
+  performRequest debugHandler cmd
 ```
 
 Which will print the contents of `my_object` to stdout.

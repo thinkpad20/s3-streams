@@ -30,7 +30,7 @@ import Prelude ( IO, Char, Monad(..), Functor(..), Bool(..), Ord(..), Eq(..)
                , Show
                , Maybe(..), Either(..)
                , or, otherwise, fst, id, error, not, map, print, filter
-               , uncurry
+               , uncurry, flip
                , (<), (>), (<=), (>=), (=<<), (&&), (||), ($), (.))
 import Codec.Utils (Octet)
 import Control.Applicative (Applicative(..), (<$>), (<*))

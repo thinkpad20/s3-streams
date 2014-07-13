@@ -28,6 +28,7 @@ class Req a where
   getHost :: Str s => a s -> s
   getPort :: Str s => a s -> Port
   getUri :: Str s => a s -> s
+  getBody :: Str s => a s -> ByteString
 
 ---------------------------------------------------------------------
 -- Building AWS Requests
@@ -46,19 +47,20 @@ v4AuthString aws = do
     , "SignedHeaders=" <> sndHeaders
     , "Signature=" <> sig]
 
-constructRequest :: (Functor io, MonadIO io, Req aws, Canonical aws, Str s) 
-                 => aws s -> io Request
-constructRequest aws = do
+constructRequest :: (Functor io, MonadIO io, Req req, Canonical req, Str s) 
+                 => req s -> io Request
+constructRequest req = do
   (dateStr :: ByteString) <- timeFmatHttpDate
-  auth <- v4AuthString aws
-  liftIO $ P.putStrLn $ "Auth: " <> fromByteString auth
+  auth <- v4AuthString req
   liftIO $ buildRequest $ do
-    http (getMethod aws) $ (toByteString $ getUri aws)
-    setHostname (toByteString $ getHost aws) (getPort aws)
-    forM_ (getHeaders aws) $ \(k, v) ->
+    http (getMethod req) $ (toByteString $ getUri req)
+    setHostname (toByteString $ getHost req) (getPort req)
+    forM_ (getHeaders req) $ \(k, v) ->
       wrapByteString2 setHeader (cap k) v
     setHeader "Date" dateStr
     setHeader "Authorization" auth
+    when (length (getBody req) > 0) $
+      setContentLength $ P.fromIntegral $ length $ getBody req
   where cap h | isPrefixOf "x-" h = h
               | otherwise = capitalize h
 
@@ -78,9 +80,10 @@ performRequest handler aws = do
           openConnectionSSL ctx host port
         False -> openConnection host port
   req <- constructRequest aws
-  print req
   withConnection mkConnection $ \con -> do
+    body <- Streams.fromByteString $ getBody aws
     case getMethod aws of
       GET -> sendRequest con req emptyBody
+      PUT -> sendRequest con req $ inputStreamBody body
       m -> error $ "HTTP method '" <> show m <> "' not yet supported"
     receiveResponse con handler
