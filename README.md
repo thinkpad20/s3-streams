@@ -6,19 +6,33 @@ This is an implementation of the AWS S3 API using `http-streams`, an HTTP client
 
 ### Example:
 
-First, load your AWS access key id and secret access key into your environment under the keys `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, respectively. Then, assuming you have the bucket `my_bucket` with object `my_object`, you can run this code:
+First, load your AWS access key id and secret access key into your environment under the keys `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, respectively. Then, assuming you have the bucket `my_bucket` with object `my_object`, this code will print the contents of `my_object` to stdout:
 
 ```haskell
-import Network.AWS.S3 (defaultConnection, s3Get, performRequest)
+import qualified Network.AWS.S3 as S3
 import Network.Http.Client (debugHandler)
+import System.IO.Streams as Streams
 
 main = do
-  con <- defaultConnection
-  cmd <- s3Get "my_bucket" "my_object" con
-  performRequest debugHandler cmd
+  -- Build a connection with default options
+  con <- S3.defaultConnection
+  cmd <- S3.get "my_bucket" "my_object" con
+  -- Prints the contents of `my_object` to stdout.
+  S3.performRequest debugHandler cmd
 ```
 
-Which will print the contents of `my_object` to stdout.
+We can also write to an S3 bucket; for example:
+
+```haskell
+main = do
+  con <- S3.defaultConnection
+  cmd <- S3.buildCommand' con $ do
+    setMethod PUT
+    setBucket "my_bucket"
+    setObject "my_object"
+    setBody "Hello, world!"
+  S3.performRequest echoHandler cmd
+```
 
 ### Status:
 

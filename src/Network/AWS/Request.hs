@@ -9,6 +9,7 @@ module Network.AWS.Request (
   , module Network.Http.Client
   , module System.IO.Streams
   , Req(..)
+  , v4AuthString
   , constructRequest, performRequest
   ) where
 
@@ -23,18 +24,19 @@ import Network.AWS.Signature (v4Signature, v4Scope)
 
 -- | Class of things that can be made into requests.
 class Req a where
-  getMethod :: Str s => a s -> Method
+  getMethod  :: Str s => a s -> Method
   getHeaders :: Str s => a s -> [(s, s)]
-  getHost :: Str s => a s -> s
-  getPort :: Str s => a s -> Port
-  getUri :: Str s => a s -> s
-  getBody :: Str s => a s -> ByteString
+  getHost    :: Str s => a s -> s
+  getPort    :: Str s => a s -> Port
+  getUri     :: Str s => a s -> s
+  getBody    :: Str s => a s -> ByteString
 
 ---------------------------------------------------------------------
 -- Building AWS Requests
 ---------------------------------------------------------------------
 
--- | AWS requests need to generate an authorization string. AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,SignedHeaders=host;range;x-amz-content-sha256;x-amz-date,Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41
+-- | Formats the authorization string with the key id credential, signed
+-- header list, and signature.
 v4AuthString :: (Functor io, MonadIO io, Canonical aws, Req aws, Str s)
              => aws s -> io ByteString
 v4AuthString aws = do
@@ -47,6 +49,7 @@ v4AuthString aws = do
     , "SignedHeaders=" <> sndHeaders
     , "Signature=" <> sig]
 
+-- | Constructs a Request from an AWS object (which implements Canonical).
 constructRequest :: (Functor io, MonadIO io, Req req, Canonical req, Str s) 
                  => req s -> io Request
 constructRequest req = do

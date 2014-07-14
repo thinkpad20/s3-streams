@@ -76,16 +76,21 @@ type S3Builder s m = StateT (S3Command s) m
 type S3Builder' s m = S3Builder s m ()
 
 -- | Builds an S3 command with a series of builder actions, starting with a 
--- connection.
-buildCommand :: (Str s, Monad m) 
+-- connection. Not the common use, since it doesn't add the date and content
+-- SHA header automatically.
+buildCommand' :: (Str s, Monad m) 
              => AwsConnection s -> S3Builder s m a -> m (S3Command s)
-buildCommand con steps = execStateT steps $ baseS3Command con
+buildCommand' con steps = execStateT steps $ baseS3Command con
 
--- | Same as @buildCommand@ but adds the date and content sha automatically.
-buildCommand' :: (Str s, MonadIO io, Functor io)
+-- | Same as @buildCommand'@ but adds the date and content sha automatically.
+buildCommand :: (Str s, MonadIO io, Functor io)
               => AwsConnection s -> S3Builder s io a -> io (S3Command s)
-buildCommand' con steps = execStateT steps' $ baseS3Command con where
+buildCommand con steps = execStateT steps' $ baseS3Command con where
   steps' = steps >> addAmzDateHeader >> addContentShaHeader
+
+extendCommand :: (Str s, Monad m, Functor m)
+              => S3Command s -> S3Builder s m a -> m (S3Command s)
+extendCommand = flip execStateT
 
 -- | Produces a base s3 command.
 baseS3Command :: Str s => AwsConnection s -> S3Command s
@@ -93,7 +98,7 @@ baseS3Command con = S3Command
   { s3Connection = con
   , s3Method = GET
   , s3Bucket = ""
-  , s3Object = ""
+  , s3Object = "/"
   , s3StorageClass = STANDARD
   , s3Query = []
   , s3Headers = mempty
@@ -152,18 +157,29 @@ excludeHeader (lower -> h) = case lower h of
 -- Common S3 Commands
 ---------------------------------------------------------------------
 
+-- | Gets the files in a bucket.
+getBucket :: (Str s, Functor io, MonadIO io)
+          => s -> AwsConnection s -> io (S3Command s)
+getBucket bucket con = buildCommand con $ setBucket bucket
+
 -- | An S3 GET command, given a bucket and an object.
-s3Get :: (Str s, Functor io, MonadIO io) 
-      => s -> s -> AwsConnection s -> io (S3Command s)
-s3Get bucket object con = buildCommand' con $ do
+getObject :: (Str s, Functor io, MonadIO io) 
+          => s -> s -> AwsConnection s -> io (S3Command s)
+getObject bucket object con = buildCommand con $ do
   setBucket bucket
   setObject object
   
--- | An S3 POST command, given a bucket, object name, and storage type.
-s3Put :: (Str s, Functor io, MonadIO io)
-       => StorageClass -> s -> s -> AwsConnection s -> io (S3Command s)
-s3Put stype bucket object con = buildCommand' con $ do
+-- | An S3 PUT command, given a bucket, object name, and storage type.
+putObject :: (Str s, Functor io, MonadIO io)
+          => StorageClass -> s -> s -> AwsConnection s -> io (S3Command s)
+putObject stype bucket object con = buildCommand con $ do
   setBucket bucket
   setObject object
   setMethod PUT
   setStorageClass stype
+
+testBucket :: Text
+testBucket = "cf-templates-gri5ttq59t5e-us-east-1"
+
+testGet = do
+  defaultConnection >>= getBucket testBucket
