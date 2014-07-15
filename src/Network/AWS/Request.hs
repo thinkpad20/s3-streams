@@ -71,10 +71,10 @@ constructRequest req = do
 -- Making AWS Requests
 ---------------------------------------------------------------------
 
-performRequest :: (Req aws, Canonical aws, Str s)
+performRequest :: (Req aws, Canonical aws, Str s, MonadIO io, Functor io)
             => (Response -> InputStream ByteString -> IO a)
             -> aws s
-            -> IO a
+            -> io a
 performRequest handler aws = do
   let (host, port) = (toByteString $ getHost aws, getPort aws)
       mkConnection = case getSecurity aws of
@@ -83,10 +83,11 @@ performRequest handler aws = do
           openConnectionSSL ctx host port
         False -> openConnection host port
   req <- constructRequest aws
-  withConnection mkConnection $ \con -> do
+  liftIO $ withConnection mkConnection $ \con -> do
     body <- Streams.fromByteString $ getBody aws
     case getMethod aws of
       GET -> sendRequest con req emptyBody
       PUT -> sendRequest con req $ inputStreamBody body
       m -> error $ "HTTP method '" <> show m <> "' not yet supported"
     receiveResponse con handler
+    

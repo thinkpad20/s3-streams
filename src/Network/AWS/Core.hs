@@ -9,8 +9,9 @@ module Network.AWS.Core (
   , module Control.Applicative
   , module Control.Monad
   , module Control.Monad.Identity
-  , module Control.Monad.Trans
+  , module Control.Monad.Reader
   , module Control.Monad.State.Strict
+  , module Control.Monad.Trans
   , module Data.ByteString
   , module Data.Foldable
   , module Data.HashMap.Strict
@@ -37,6 +38,7 @@ import Control.Applicative (Applicative(..), (<$>), (<*))
 import Control.Monad (when)
 import Control.Monad.Trans (MonadIO(..), lift)
 import Control.Monad.Identity (Identity(..))
+import Control.Monad.Reader(ReaderT(..), MonadReader(..))
 import Control.Monad.State.Strict (StateT(..), execStateT, modify, gets)
 import Crypto.Hash (SHA256(..), hmacAlg)
 import qualified Crypto.Hash.SHA256 as SHA256

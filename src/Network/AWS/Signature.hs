@@ -8,7 +8,7 @@ module Network.AWS.Signature where
 
 import qualified Prelude as P
 import Network.AWS.Core
-import Network.AWS.Connection ( Aws(..), Canonical(..), AwsConnection(..)
+import Network.AWS.Connection ( AwsCfg(..), Canonical(..), AwsConnection(..)
                               , getRegion, getService, getSecretKey)
 
 ---------------------------------------------------------------------
@@ -24,7 +24,7 @@ v4Scope :: (Functor io, MonadIO io, Canonical aws, Str s) => aws s -> io s
 v4Scope aws = do 
   date <- timeFmatShort
   return $ joinSlashes [date, getRegion aws, getService aws, "aws4_request"]
-
+  
 -- | Implementation of AWS's rules for constructing the string to sign.
 stringToSign :: (Functor io, MonadIO io, Canonical aws, Str s) => aws s -> io s
 stringToSign aws = joinLines <$> do
@@ -33,7 +33,7 @@ stringToSign aws = joinLines <$> do
   return ["AWS4-HMAC-SHA256", stamp, scope, hexHash $ canonicalRequest aws]
   
 -- | Generates a one-time secret key according to the Version 4 rules.    
-v4Key :: (Functor io, MonadIO io, Aws aws, Str s) => aws s -> io ByteString
+v4Key :: (Functor io, MonadIO io, AwsCfg aws, Str s) => aws s -> io ByteString
 v4Key aws = do
   date <- timeFmatShort
   return $ foldl1 hmac256 $ map toByteString 

@@ -17,11 +17,11 @@ import Network.AWS.Core
 ---------------------------------------------------------------------
 
 -- | Class of things which contain AWS configuration.
-class Aws a where
+class AwsCfg a where
   getCon :: Str s => a s -> AwsConnection s
 
 -- | The class of types from which we can generate CanonicalHeaders.
-class Aws a => Canonical a where 
+class AwsCfg a => Canonical a where 
   -- | Builds the canonical list of headers.
   canonicalHeaders :: Str s => a s -> [(s, s)]
   -- | Munges information from the command into a "canonical request".
@@ -61,25 +61,25 @@ data AwsConnection str = AwsConnection
   , awsCredentials :: AwsCredentials str
   } deriving (Show)
 
-instance Aws AwsConnection where
+instance AwsCfg AwsConnection where
   getCon = id
 
--- | Various getters for Aws types:
-getCreds :: (Aws aws, Str s) => aws s -> AwsCredentials s
+-- | Various getters for AwsCfg types:
+getCreds :: (AwsCfg aws, Str s) => aws s -> AwsCredentials s
 getCreds = awsCredentials . getCon
-getKeyId :: (Aws aws, Str s) => aws s -> s
+getKeyId :: (AwsCfg aws, Str s) => aws s -> s
 getKeyId = awsKeyId . getCreds
-getSecretKey :: (Aws aws, Str s) => aws s -> s
+getSecretKey :: (AwsCfg aws, Str s) => aws s -> s
 getSecretKey = awsSecretKey . getCreds
-getConfig :: (Aws aws, Str s) => aws s -> AwsConfig s
+getConfig :: (AwsCfg aws, Str s) => aws s -> AwsConfig s
 getConfig = awsConfig . getCon
-getHostName :: (Aws aws, Str s) => aws s -> s
+getHostName :: (AwsCfg aws, Str s) => aws s -> s
 getHostName = awsHostName . getConfig
-getRegion :: (Aws aws, Str s) => aws s -> s
+getRegion :: (AwsCfg aws, Str s) => aws s -> s
 getRegion = awsRegion . getConfig
-getSecurity :: (Aws aws, Str s) => aws s -> Bool
+getSecurity :: (AwsCfg aws, Str s) => aws s -> Bool
 getSecurity = awsIsSecure . getConfig
-getService :: (Aws aws, Str s) => aws s -> s
+getService :: (AwsCfg aws, Str s) => aws s -> s
 getService = awsService . getConfig
 
 ---------------------------------------------------------------------
@@ -142,3 +142,21 @@ findCredentialsFromEnv = do
 findCredentialsFromFile :: (Functor io, MonadIO io, Str s) 
                         => s -> io (Maybe (AwsCredentials s))
 findCredentialsFromFile (toString -> path) = P.undefined
+
+---------------------------------------------------------------------
+-- AWS Monad
+---------------------------------------------------------------------
+
+-- | Many operations take place in the context of some AWS connection. We can
+-- put them in a monad transformer to simplify them.
+type AwsT s = ReaderT (AwsConnection s)
+
+-- | Runs a series of actions in the context of a single connection.
+withConnection :: (Str s, MonadIO io, Functor io) 
+               => AwsConnection s -> AwsT s io a -> io a
+withConnection con = flip runReaderT con
+
+withDefaultConnection :: (Str s, MonadIO io, Functor io) => AwsT s io a -> io a
+withDefaultConnection actions = do
+  con <- defaultConnection
+  withConnection con actions
